@@ -167,18 +167,20 @@ struct clip_ctx {
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
         }
-        if (ctx_params.use_gpu) {
-            auto backend_name = std::getenv("MTMD_BACKEND_DEVICE");
-            if (backend_name != nullptr) {
-                backend = ggml_backend_init_by_name(backend_name, nullptr);
-                if (!backend) {
-                    LOG_WRN("%s: Warning: Failed to initialize \"%s\" backend, falling back to default GPU backend\n", __func__, backend_name);
-                }
-            }
+        // Backend selection: --mmproj-backend > MTMD_BACKEND_DEVICE env > default GPU
+        const char * explicit_backend = ctx_params.backend_name;
+        if (!explicit_backend || explicit_backend[0] == '\0') {
+            explicit_backend = std::getenv("MTMD_BACKEND_DEVICE");
+        }
+        if (explicit_backend != nullptr && explicit_backend[0] != '\0') {
+            backend = ggml_backend_init_by_name(explicit_backend, nullptr);
             if (!backend) {
-                backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
-                backend = backend ? backend : ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
+                LOG_WRN("%s: Warning: Failed to initialize \"%s\" backend, falling back to default GPU backend\n", __func__, explicit_backend);
             }
+        }
+        if (!backend && ctx_params.use_gpu) {
+            backend = ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_GPU, nullptr);
+            backend = backend ? backend : ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU, nullptr);
         }
 
         if (backend) {

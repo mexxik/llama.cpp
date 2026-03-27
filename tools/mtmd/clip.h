@@ -34,6 +34,7 @@ enum clip_flash_attn_type {
 
 struct clip_context_params {
     bool use_gpu;
+    const char * backend_name; // specific backend name (e.g., "CUDA0", "Vulkan0"), nullptr = auto
     enum clip_flash_attn_type flash_attn_type;
     int image_min_tokens;
     int image_max_tokens;

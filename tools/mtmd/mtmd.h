@@ -85,6 +85,7 @@ typedef struct mtmd_input_text   mtmd_input_text;
 
 struct mtmd_context_params {
     bool use_gpu;
+    const char * backend_name; // specific backend name (e.g., "CUDA0", "Vulkan0"), nullptr = auto
     bool print_timings;
     int n_threads;
     const char * image_marker; // deprecated, use media_marker instead

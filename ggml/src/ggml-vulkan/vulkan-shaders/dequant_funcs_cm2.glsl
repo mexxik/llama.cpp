@@ -30,6 +30,25 @@ float16_t dequantFuncQ4_0(const in decodeBufQ4_0 bl, const in uint blockCoords[2
     return ret;
 }
 
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ4_HQQ {
+   block_q4_hqq block;
+};
+
+float16_t dequantFuncQ4_HQQ(const in decodeBufQ4_HQQ bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const float16_t scale = bl.block.scale;
+    const float16_t zero  = bl.block.zero;
+    const float16_t inv_scale = scale > float16_t(0) ? float16_t(1) / scale : float16_t(0);
+    const uint idx = coordInBlock[1];
+    const uint iqs = idx & 0xF;
+    const uint shift = (idx & 0x10) >> 2;
+    uint32_t qs = bl.block.qs[iqs];
+    qs >>= shift;
+    qs &= 0xF;
+    float16_t ret = (float16_t(qs) - zero) * inv_scale;
+    return ret;
+}
+
 layout(buffer_reference, std430, buffer_reference_align = 4) buffer decodeBufQ4_1 {
    block_q4_1 block;
 };
@@ -687,6 +706,8 @@ float16_t dequantFuncMXFP4(const in decodeBufMXFP4 bl, const in uint blockCoords
 
 #if defined(DATA_A_Q4_0)
 #define dequantFuncA dequantFuncQ4_0
+#elif defined(DATA_A_Q4_HQQ)
+#define dequantFuncA dequantFuncQ4_HQQ
 #elif defined(DATA_A_Q4_1)
 #define dequantFuncA dequantFuncQ4_1
 #elif defined(DATA_A_Q5_0)

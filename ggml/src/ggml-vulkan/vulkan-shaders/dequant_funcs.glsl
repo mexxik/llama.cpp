@@ -33,6 +33,17 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_Q4_HQQ)
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    const uint vui = uint(data_a[a_offset + ib].qs[iqs]);
+    return vec2(vui & 0xF, vui >> 4);
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    const uint vui = uint(data_a_packed16[a_offset + ib].qs[iqs/2]);
+    return vec4(vui & 0xF, (vui >> 4) & 0xF, (vui >> 8) & 0xF, vui >> 12);
+}
+#endif
+
 #if defined(DATA_A_Q4_1)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint vui = uint(data_a[a_offset + ib].qs[iqs]);
@@ -457,6 +468,17 @@ vec2 get_dm(uint ib, uint a_offset) {
 #if defined(DATA_A_MXFP4)
 vec2 get_dm(uint ib, uint a_offset) {
     return vec2(e8m0_to_fp32(data_a[a_offset + ib].e), 0);
+}
+#endif
+
+#if defined(DATA_A_Q4_HQQ)
+vec2 get_dm(uint ib, uint a_offset) {
+    const float scale = float(data_a[a_offset + ib].scale);
+    const float zero  = float(data_a[a_offset + ib].zero);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+    // Return (inv_scale, -zero * inv_scale) so generic shader computes:
+    // inv_scale * q + (-zero * inv_scale) = (q - zero) / scale
+    return vec2(inv_scale, -zero * inv_scale);
 }
 #endif
 

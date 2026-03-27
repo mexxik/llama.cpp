@@ -8,6 +8,8 @@
 #include "../../quants.h"
 #include "../../ggml-cpu-impl.h"
 
+#include <stdlib.h>
+
 #include <math.h>
 #include <string.h>
 #include <assert.h>
@@ -590,7 +592,83 @@ void ggml_vec_dot_q4_1_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const voi
 }
 
 void ggml_vec_dot_q4_hqq_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-    ggml_vec_dot_q4_hqq_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+    const int qk = QK4_HQQ;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q4_hqq * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    int ib = 0;
+    float sumf = 0;
+
+#if defined(__ARM_NEON)
+    // Allow disabling SIMD for benchmarking: GGML_Q4_HQQ_NO_SIMD=1
+    static int use_simd = -1;
+    if (use_simd < 0) {
+        const char * env = getenv("GGML_Q4_HQQ_NO_SIMD");
+        use_simd = (env == NULL || env[0] == '0') ? 1 : 0;
+    }
+
+    if (use_simd) for (; ib < nb; ++ib) {
+        const float scale = GGML_CPU_FP16_TO_FP32(x[ib].scale);
+        const float zero  = GGML_CPU_FP16_TO_FP32(x[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float yd = GGML_CPU_FP16_TO_FP32(y[ib].d);
+
+        const uint8x16_t m4b = vdupq_n_u8(0x0F);
+
+        // Load 16 bytes of packed 4-bit values
+        const uint8x16_t v0 = vld1q_u8(x[ib].qs);
+
+        // Unpack to unsigned 8-bit: low nibbles and high nibbles
+        const int8x16_t v0l = vreinterpretq_s8_u8(vandq_u8  (v0, m4b));
+        const int8x16_t v0h = vreinterpretq_s8_u8(vshrq_n_u8(v0, 4));
+
+        // Load q8_0 values
+        const int8x16_t v1l = vld1q_s8(y[ib].qs);
+        const int8x16_t v1h = vld1q_s8(y[ib].qs + 16);
+
+        // Dot product: sum(q4 * q8) — unsigned q4 [0..15] treated as signed (fits in int8)
+        const int32x4_t p = ggml_vdotq_s32(ggml_vdotq_s32(vdupq_n_s32(0), v0l, v1l), v0h, v1h);
+        const int sumi = vaddvq_s32(p);
+
+        // Sum of q8 values for zero-point correction
+        const int16x8_t y16l = vmovl_s8(vget_low_s8(v1l));
+        const int16x8_t y16h = vmovl_s8(vget_high_s8(v1l));
+        const int16x8_t y16l2 = vmovl_s8(vget_low_s8(v1h));
+        const int16x8_t y16h2 = vmovl_s8(vget_high_s8(v1h));
+        const int sumy = vaddvq_s16(y16l) + vaddvq_s16(y16h) + vaddvq_s16(y16l2) + vaddvq_s16(y16h2);
+
+        sumf += inv_scale * yd * ((float)sumi - zero * (float)sumy);
+    }
+#endif
+
+    // Scalar fallback
+    for (; ib < nb; ++ib) {
+        const float scale = GGML_CPU_FP16_TO_FP32(x[ib].scale);
+        const float zero  = GGML_CPU_FP16_TO_FP32(x[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float yd = GGML_CPU_FP16_TO_FP32(y[ib].d);
+
+        int sumi0 = 0, sumi1 = 0, sumy = 0;
+        for (int j = 0; j < qk/2; ++j) {
+            sumi0 += (x[ib].qs[j] & 0x0F) * y[ib].qs[j];
+            sumi1 += (x[ib].qs[j] >>   4) * y[ib].qs[j + qk/2];
+        }
+        for (int j = 0; j < qk; ++j) {
+            sumy += y[ib].qs[j];
+        }
+        sumf += inv_scale * yd * ((float)(sumi0 + sumi1) - zero * (float)sumy);
+    }
+
+    *s = sumf;
 }
 
 void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {

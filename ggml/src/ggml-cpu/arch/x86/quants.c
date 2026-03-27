@@ -8,6 +8,8 @@
 #include "../../quants.h"
 #include "../../ggml-cpu-impl.h"
 
+#include <stdlib.h>
+
 #include <math.h>
 #include <string.h>
 #include <assert.h>
@@ -758,7 +760,86 @@ void ggml_vec_dot_q4_1_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const voi
 }
 
 void ggml_vec_dot_q4_hqq_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
-    ggml_vec_dot_q4_hqq_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+    const int qk = QK4_HQQ;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q4_hqq * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    int ib = 0;
+    float sumf = 0;
+
+#if defined(__AVX2__)
+    // Allow disabling SIMD for benchmarking: GGML_Q4_HQQ_NO_SIMD=1
+    static int use_simd = -1;
+    if (use_simd < 0) {
+        const char * env = getenv("GGML_Q4_HQQ_NO_SIMD");
+        use_simd = (env == NULL || env[0] == '0') ? 1 : 0;
+    }
+
+    if (use_simd) for (; ib < nb; ++ib) {
+        const float scale = GGML_CPU_FP16_TO_FP32(x[ib].scale);
+        const float zero  = GGML_CPU_FP16_TO_FP32(x[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float yd = GGML_CPU_FP16_TO_FP32(y[ib].d);
+
+        // Unpack 4-bit nibbles to 32 bytes in [0..15]
+        const __m256i qx = bytes_from_nibbles_32(x[ib].qs);
+
+        // Load 32 int8 q8_0 values
+        const __m256i qy = _mm256_loadu_si256((const __m256i *)y[ib].qs);
+
+        // Compute sum(q4_unsigned * q8_signed) via unsigned*signed dot product
+        const __m256 q_dot = mul_sum_us8_pairs_float(qx, qy);
+
+        // Compute sum(q8) for zero-point correction
+        // _mm256_maddubs_epi16(a_unsigned, b_signed) computes pairwise a*b as int16
+        // Use ones as unsigned, qy as signed to get pairwise sums of qy
+        const __m256i ones_8 = _mm256_set1_epi8(1);
+        const __m256i sumy_16 = _mm256_maddubs_epi16(ones_8, qy);
+        // Sum int16 pairs to int32
+        const __m256i ones_16 = _mm256_set1_epi16(1);
+        const __m256i sumy_32 = _mm256_madd_epi16(sumy_16, ones_16);
+        // Horizontal sum of 8 int32s
+        const __m128i lo = _mm256_castsi256_si128(sumy_32);
+        const __m128i hi = _mm256_extracti128_si256(sumy_32, 1);
+        const __m128i sum128 = _mm_add_epi32(lo, hi);
+        const __m128i sum64 = _mm_add_epi32(sum128, _mm_srli_si128(sum128, 8));
+        const __m128i sum32 = _mm_add_epi32(sum64, _mm_srli_si128(sum64, 4));
+        const int sumy = _mm_cvtsi128_si32(sum32);
+
+        // w = (q - zero) / scale, y = q8 * yd
+        // sum(w*y) = inv_scale * yd * (sum(q*q8) - zero * sum(q8))
+        sumf += inv_scale * yd * (hsum_float_8(q_dot) - zero * (float)sumy);
+    }
+#endif
+
+    // Scalar fallback for remaining blocks or non-AVX2
+    for (; ib < nb; ++ib) {
+        const float scale = GGML_CPU_FP16_TO_FP32(x[ib].scale);
+        const float zero  = GGML_CPU_FP16_TO_FP32(x[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float yd = GGML_CPU_FP16_TO_FP32(y[ib].d);
+
+        int sumi0 = 0, sumi1 = 0, sumy = 0;
+        for (int j = 0; j < qk/2; ++j) {
+            sumi0 += (x[ib].qs[j] & 0x0F) * y[ib].qs[j];
+            sumi1 += (x[ib].qs[j] >>   4) * y[ib].qs[j + qk/2];
+        }
+        for (int j = 0; j < qk; ++j) {
+            sumy += y[ib].qs[j];
+        }
+        sumf += inv_scale * yd * ((float)(sumi0 + sumi1) - zero * (float)sumy);
+    }
+
+    *s = sumf;
 }
 
 void ggml_vec_dot_mxfp4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {

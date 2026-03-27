@@ -170,6 +170,41 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q4_1(
 }
 
 template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q4_hqq(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_q4_hqq * K_q4_hqq = (const block_q4_hqq *) K_c;
+    GGML_UNUSED(Q_v);
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib    = k_KQ /  QI8_1;
+        const int iqs4  = k_KQ %  QI4_HQQ;
+        const int shift = k_KQ & (QI8_1/2);
+
+        int v;
+        ggml_cuda_memcpy_1<sizeof(int)>(&v, K_q4_hqq[ib].qs + sizeof(int)*iqs4);
+        v = (v >> shift) & 0x0F0F0F0F;
+        const int u = Q_q8[k_KQ_0/nthreads];
+
+        const int sumi = ggml_cuda_dp4a(v, u, 0);
+
+        const float scale = __half2float(K_q4_hqq[ib].scale);
+        const float zero  = __half2float(K_q4_hqq[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float2 Q_ds = ((const float2 *) Q_ds_v)[k_KQ_0/nthreads];
+
+        sum += inv_scale * (sumi*Q_ds.x - zero*Q_ds.y/QI8_1);
+    }
+
+    return sum;
+}
+
+template<int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q5_0(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
 
@@ -445,6 +480,46 @@ static __device__ __forceinline__ void dequantize_V_q4_1(const void * __restrict
 }
 
 template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_q4_hqq(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_q4_hqq * x = (const block_q4_hqq *) vx;
+
+    const int64_t ib    =  i0            /  QK4_HQQ;
+    const int     iqs   =  i0            % (QK4_HQQ/2);
+    const int     shift = (i0 % QK4_HQQ) / (QK4_HQQ/2);
+
+    int q;
+    static_assert(ne == 2 || ne == 4, "bad ne");
+    ggml_cuda_memcpy_1<ne>(&q, x[ib].qs + iqs);
+    q >>= 4*shift;
+    q &= 0x0F0F0F0F;
+
+    const int8_t * q8 = (const int8_t *) &q;
+
+    const float scale = __half2float(x[ib].scale);
+    const float zero  = __half2float(x[ib].zero);
+    const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same_v<T, half>) {
+#pragma unroll
+        for (int l0 = 0; l0 < ne; l0 += 2) {
+            ((half2 *) dst)[l0/2] = make_half2(
+                __float2half((q8[l0 + 0] - zero) * inv_scale),
+                __float2half((q8[l0 + 1] - zero) * inv_scale));
+        }
+    } else
+#endif // FP16_AVAILABLE
+    if constexpr (std::is_same_v<T, float>) {
+#pragma unroll
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = (q8[l] - zero) * inv_scale;
+        }
+    } else {
+        static_assert(std::is_same_v<T, void>, "bad type");
+    }
+}
+
+template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_q5_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     const block_q5_0 * x = (const block_q5_0 *) vx;
 
@@ -585,6 +660,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q4_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q4_1) {
         return vec_dot_fattn_vec_KQ_q4_1<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_Q4_HQQ) {
+        return vec_dot_fattn_vec_KQ_q4_hqq<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q5_0) {
         return vec_dot_fattn_vec_KQ_q5_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_Q5_1) {
@@ -607,6 +684,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q4_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_Q4_1) {
         return dequantize_V_q4_1<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_Q4_HQQ) {
+        return dequantize_V_q4_hqq<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_Q5_0) {
         return dequantize_V_q5_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_Q5_1) {

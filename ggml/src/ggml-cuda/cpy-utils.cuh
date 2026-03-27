@@ -43,6 +43,34 @@ static __device__ void quantize_f32_q4_0_block(const float * __restrict__ x, blo
     }
 }
 
+static __device__ void quantize_f32_q4_hqq_block(const float * __restrict__ x, block_q4_hqq * __restrict__ y) {
+    float min_val =  FLT_MAX;
+    float max_val = -FLT_MAX;
+
+    for (int j = 0; j < QK4_HQQ; ++j) {
+        const float v = x[j];
+        if (v < min_val) min_val = v;
+        if (v > max_val) max_val = v;
+    }
+
+    const float range = max_val - min_val;
+    const float scale = range > 0.0f ? 15.0f / range : 0.0f;
+    const float zero  = -min_val * scale;
+
+    y->scale = scale;
+    y->zero  = zero;
+
+    for (int j = 0; j < QK4_HQQ/2; ++j) {
+        const float v0 = x[j] * scale + zero;
+        const float v1 = x[j + QK4_HQQ/2] * scale + zero;
+
+        const uint8_t q0 = (uint8_t) min(15, max(0, __float2int_rn(v0)));
+        const uint8_t q1 = (uint8_t) min(15, max(0, __float2int_rn(v1)));
+
+        y->qs[j] = q0 | (q1 << 4);
+    }
+}
+
 static __device__ void quantize_f32_q4_1_block(const float * __restrict__ x, block_q4_1 * __restrict__ y) {
     float vmin = FLT_MAX;
     float vmax = -FLT_MAX;
@@ -189,6 +217,10 @@ static __device__ void quantize_f32_iq4_nl_block(const float * __restrict__ x, b
 // Wrapper functions for cpy.cu compatibility
 static __device__ void cpy_blck_f32_q4_0(const char * cxi, char * cdsti) {
     quantize_f32_q4_0_block((const float *)cxi, (block_q4_0 *)cdsti);
+}
+
+static __device__ void cpy_blck_f32_q4_hqq(const char * cxi, char * cdsti) {
+    quantize_f32_q4_hqq_block((const float *)cxi, (block_q4_hqq *)cdsti);
 }
 
 static __device__ void cpy_blck_f32_q4_1(const char * cxi, char * cdsti) {

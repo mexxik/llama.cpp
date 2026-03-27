@@ -713,6 +713,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
+        case GGML_TYPE_Q4_HQQ:
+            return dequantize_block_cont_cuda<QK4_HQQ, QR4_HQQ, dequantize_q4_hqq>;
         case GGML_TYPE_Q4_1:
             return dequantize_row_q4_1_cuda;
         case GGML_TYPE_Q5_0:
@@ -769,6 +771,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q4_0:
             return dequantize_row_q4_0_cuda;
+        case GGML_TYPE_Q4_HQQ:
+            return dequantize_block_cont_cuda<QK4_HQQ, QR4_HQQ, dequantize_q4_hqq>;
         case GGML_TYPE_Q4_1:
             return dequantize_row_q4_1_cuda;
         case GGML_TYPE_Q5_0:
@@ -824,6 +828,8 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return convert_unary_cuda<float>;
         case GGML_TYPE_Q4_0:
             return dequantize_block_cuda<QK4_0, QR4_0, dequantize_q4_0>;
+        case GGML_TYPE_Q4_HQQ:
+            return dequantize_block_cuda<QK4_HQQ, QR4_HQQ, dequantize_q4_hqq>;
         case GGML_TYPE_Q4_1:
             return dequantize_block_cuda<QK4_1, QR4_1, dequantize_q4_1>;
         case GGML_TYPE_Q5_0:
@@ -845,6 +851,8 @@ to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type) {
             return convert_unary_cuda<float, nv_bfloat16>;
         case GGML_TYPE_Q4_0:
             return dequantize_block_cuda<QK4_0, QR4_0, dequantize_q4_0>;
+        case GGML_TYPE_Q4_HQQ:
+            return dequantize_block_cuda<QK4_HQQ, QR4_HQQ, dequantize_q4_hqq>;
         case GGML_TYPE_Q4_1:
             return dequantize_block_cuda<QK4_1, QR4_1, dequantize_q4_1>;
         case GGML_TYPE_Q5_0:
@@ -866,6 +874,8 @@ to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type) {
             return convert_unary_cuda<half, float>;
         case GGML_TYPE_Q4_0:
             return dequantize_block_cuda<QK4_0, QR4_0, dequantize_q4_0>;
+        case GGML_TYPE_Q4_HQQ:
+            return dequantize_block_cuda<QK4_HQQ, QR4_HQQ, dequantize_q4_hqq>;
         case GGML_TYPE_Q4_1:
             return dequantize_block_cuda<QK4_1, QR4_1, dequantize_q4_1>;
         case GGML_TYPE_Q5_0:

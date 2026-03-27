@@ -688,6 +688,43 @@ static __device__ __forceinline__ float vec_dot_q4_0_q8_1(
 }
 
 
+#define VDR_Q4_HQQ_Q8_1_MMVQ 2
+
+static __device__ __forceinline__ float vec_dot_q4_hqq_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_q4_hqq * bq4_hqq = (const block_q4_hqq *) vbq + kbx;
+
+    int v[VDR_Q4_HQQ_Q8_1_MMVQ];
+    int u[2*VDR_Q4_HQQ_Q8_1_MMVQ];
+
+#pragma unroll
+    for (int i = 0; i < VDR_Q4_HQQ_Q8_1_MMVQ; ++i) {
+        v[i]     = get_int_b4(bq4_hqq->qs, iqs + i);
+        u[2*i+0] = get_int_b4(bq8_1->qs, iqs + i);
+        u[2*i+1] = get_int_b4(bq8_1->qs, iqs + i + QI4_HQQ);
+    }
+
+    const float scale_val = __half2float(bq4_hqq->scale);
+    const float zero_val  = __half2float(bq4_hqq->zero);
+    const float inv_scale = scale_val > 0.0f ? 1.0f / scale_val : 0.0f;
+
+    int sumi = 0;
+#pragma unroll
+    for (int i = 0; i < VDR_Q4_HQQ_Q8_1_MMVQ; ++i) {
+        const int vi0 = (v[i] >> 0) & 0x0F0F0F0F;
+        const int vi1 = (v[i] >> 4) & 0x0F0F0F0F;
+        sumi = ggml_cuda_dp4a(vi0, u[2*i+0], sumi);
+        sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
+    }
+
+    const float2 ds8f = __half22float2(bq8_1->ds);
+
+    // w = (q - zero) / scale, y = q8 * d8
+    // sum(w*y) = inv_scale * (sumi * d8 - zero * s8 / correction)
+    return inv_scale * (sumi * ds8f.x - zero_val * ds8f.y / (QI8_1 / (VDR_Q4_HQQ_Q8_1_MMVQ * QR4_HQQ)));
+}
+
 static __device__ __forceinline__ float vec_dot_q4_1_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 

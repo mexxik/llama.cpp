@@ -26,6 +26,10 @@ void quantize_row_q4_0(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
     quantize_row_q4_0_ref(x, y, k);
 }
 
+void quantize_row_q4_hqq(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_q4_hqq_ref(x, y, k);
+}
+
 void quantize_row_q4_1(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
     quantize_row_q4_1_ref(x, y, k);
 }
@@ -147,6 +151,53 @@ void ggml_vec_dot_q4_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, c
 
         int sumi = sumi0 + sumi1;
         sumf += sumi*GGML_CPU_FP16_TO_FP32(x[ib].d)*GGML_CPU_FP16_TO_FP32(y[ib].d);
+    }
+
+    *s = sumf;
+}
+
+void ggml_vec_dot_q4_hqq_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    const int qk = QK4_HQQ;
+    const int nb = n / qk;
+
+    assert(n % qk == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_q4_hqq * GGML_RESTRICT x = vx;
+    const block_q8_0   * GGML_RESTRICT y = vy;
+
+    float sumf = 0;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float scale = GGML_CPU_FP16_TO_FP32(x[ib].scale);
+        const float zero  = GGML_CPU_FP16_TO_FP32(x[ib].zero);
+        const float inv_scale = scale > 0.0f ? 1.0f / scale : 0.0f;
+        const float yd = GGML_CPU_FP16_TO_FP32(y[ib].d);
+
+        int sumi0 = 0;
+        int sumi1 = 0;
+
+        for (int j = 0; j < qk/2; ++j) {
+            const int q0 = (x[ib].qs[j] & 0x0F);
+            const int q1 = (x[ib].qs[j] >>   4);
+
+            sumi0 += q0 * y[ib].qs[j];
+            sumi1 += q1 * y[ib].qs[j + qk/2];
+        }
+
+        // Sum of all y values for the zero-point correction
+        int sumy = 0;
+        for (int j = 0; j < qk; ++j) {
+            sumy += y[ib].qs[j];
+        }
+
+        // w_i * y_i = ((q_i - zero) / scale) * (y_q_i * y_d)
+        // = (1/scale) * y_d * (sum(q_i * y_q_i) - zero * sum(y_q_i))
+        sumf += inv_scale * yd * ((float)(sumi0 + sumi1) - zero * (float)sumy);
     }
 
     *s = sumf;
